@@ -41,6 +41,7 @@
 
 #include <grpc/impl/codegen/compression_types.h>
 #include <grpc/impl/codegen/propagation_bits.h>
+#include <grpcpp/impl/codegen/client_interceptor.h>
 #include <grpcpp/impl/codegen/config.h>
 #include <grpcpp/impl/codegen/core_codegen_interface.h>
 #include <grpcpp/impl/codegen/create_auth_context.h>
@@ -70,6 +71,12 @@ template <class InputMessage, class OutputMessage>
 class BlockingUnaryCallImpl;
 template <class InputMessage, class OutputMessage>
 class CallbackUnaryCallImpl;
+template <class Request, class Response>
+class ClientCallbackReaderWriterImpl;
+template <class Response>
+class ClientCallbackReaderImpl;
+template <class Request>
+class ClientCallbackWriterImpl;
 }  // namespace internal
 
 template <class R>
@@ -161,6 +168,8 @@ class InteropClientContextInspector;
 /// (see \a grpc::CreateCustomChannel).
 ///
 /// \warning ClientContext instances should \em not be reused across rpcs.
+/// \warning The ClientContext instance used for creating an rpc must remain
+///          alive and valid for the lifetime of the rpc.
 class ClientContext {
  public:
   ClientContext();
@@ -224,7 +233,7 @@ class ClientContext {
   /// \warning This method should only be called before invoking the rpc.
   ///
   /// \param deadline the deadline for the client call. Units are determined by
-  /// the type used.
+  /// the type used. The deadline is an absolute (not relative) time.
   template <typename T>
   void set_deadline(const T& deadline) {
     TimePoint<T> deadline_tp(deadline);
@@ -393,6 +402,12 @@ class ClientContext {
   friend class ::grpc::internal::BlockingUnaryCallImpl;
   template <class InputMessage, class OutputMessage>
   friend class ::grpc::internal::CallbackUnaryCallImpl;
+  template <class Request, class Response>
+  friend class ::grpc::internal::ClientCallbackReaderWriterImpl;
+  template <class Response>
+  friend class ::grpc::internal::ClientCallbackReaderImpl;
+  template <class Request>
+  friend class ::grpc::internal::ClientCallbackWriterImpl;
 
   // Used by friend class CallOpClientRecvStatus
   void set_debug_error_string(const grpc::string& debug_error_string) {
@@ -401,6 +416,17 @@ class ClientContext {
 
   grpc_call* call() const { return call_; }
   void set_call(grpc_call* call, const std::shared_ptr<Channel>& channel);
+
+  experimental::ClientRpcInfo* set_client_rpc_info(
+      const char* method, grpc::ChannelInterface* channel,
+      const std::vector<
+          std::unique_ptr<experimental::ClientInterceptorFactoryInterface>>&
+          creators,
+      size_t interceptor_pos) {
+    rpc_info_ = experimental::ClientRpcInfo(this, method, channel);
+    rpc_info_.RegisterInterceptors(creators, interceptor_pos);
+    return &rpc_info_;
+  }
 
   uint32_t initial_metadata_flags() const {
     return (idempotent_ ? GRPC_INITIAL_METADATA_IDEMPOTENT_REQUEST : 0) |
@@ -413,6 +439,8 @@ class ClientContext {
   }
 
   grpc::string authority() { return authority_; }
+
+  void SendCancelToInterceptors();
 
   bool initial_metadata_received_;
   bool wait_for_ready_;
@@ -439,6 +467,8 @@ class ClientContext {
   bool initial_metadata_corked_;
 
   grpc::string debug_error_string_;
+
+  experimental::ClientRpcInfo rpc_info_;
 };
 
 }  // namespace grpc
